@@ -1,0 +1,47 @@
+# Логи
+*.log
+/tmp/vpn-installer.log
+
+# Временные файлы
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Docker файлы
+docker-compose.override.yml
+
+# Конфигурационные файлы с паролями
+.env
+*.key
+*.pem
+
+# Директории с данными VPN
+/opt/wg-easy/
+/opt/openvpn/
+/opt/softether/
+
+# Резервные копии
+*.bak
+*.backup
+
+# IDE файлы
+.vscode/
+.idea/
+*.sublime-*
+
+# Архивы
+*.tar.gz
+*.zip
+*.rar
+
+# Скомпилированные файлы
+*.o
+*.so
+*.dll
+*.exe
