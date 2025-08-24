@@ -55,7 +55,7 @@ print_header() {
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║              Универсальный установщик VPN                    ║"
-    echo "║        wg-easy (Docker) + 3x-ui (официальный скрипт)         ║"
+    echo "║  wg-easy (Docker) + 3x-ui + Outline VPN (официальные скрипты)║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -85,7 +85,7 @@ print_error() {
 
 # Функция вывода информации
 print_info() {
-    echo -e "${BLUE}ℹ $1${NC}"
+    echo -e "${BLUE} $1${NC}"
     log "INFO" "$1"
 }
 
@@ -169,17 +169,52 @@ install_dependencies() {
     
     case $PACKAGE_MANAGER in
         "apt")
-            apt install -y curl wget git ca-certificates gnupg lsb-release
+            apt install -y curl wget git ca-certificates gnupg lsb-release ufw
             ;;
         "dnf"|"yum")
-            $PACKAGE_MANAGER install -y curl wget git ca-certificates gnupg
+            $PACKAGE_MANAGER install -y curl wget git ca-certificates gnupg firewalld
             ;;
         "pacman")
-            pacman -S --noconfirm curl wget git ca-certificates gnupg
+            pacman -S --noconfirm curl wget git ca-certificates gnupg ufw
             ;;
     esac
     
     print_success "Зависимости установлены"
+    
+    # Настройка базового файервола
+    print_info "Настройка базового файервола..."
+    
+    case $PACKAGE_MANAGER in
+        "apt")
+            # Настройка UFW для Ubuntu/Debian
+            if command -v ufw &> /dev/null; then
+                ufw --force reset
+                ufw default deny incoming
+                ufw default allow outgoing
+                ufw allow 22/tcp
+                print_success "UFW настроен (SSH разрешен)"
+            fi
+            ;;
+        "dnf"|"yum")
+            # Настройка firewalld для RHEL/CentOS
+            if command -v firewall-cmd &> /dev/null; then
+                firewall-cmd --set-default-zone=public
+                firewall-cmd --permanent --add-service=ssh
+                firewall-cmd --reload
+                print_success "Firewalld настроен (SSH разрешен)"
+            fi
+            ;;
+        "pacman")
+            # Настройка UFW для Arch
+            if command -v ufw &> /dev/null; then
+                ufw --force reset
+                ufw default deny incoming
+                ufw default allow outgoing
+                ufw allow 22/tcp
+                print_success "UFW настроен (SSH разрешен)"
+            fi
+            ;;
+    esac
 }
 
 # Функция установки Docker
@@ -467,6 +502,9 @@ cleanup() {
     # Очистка 3x-ui
     cleanup_3x_ui
     
+    # Очистка Outline VPN
+    cleanup_outline
+    
     # Остановка и удаление всех остальных контейнеров
     print_info "Остановка и удаление всех контейнеров..."
     docker stop $(docker ps -aq) 2>/dev/null || true
@@ -558,6 +596,68 @@ cleanup_wg_easy() {
     docker network rm wg-network 2>/dev/null || true
     
     print_success "Очистка wg-easy завершена"
+}
+
+# Функция очистки Outline VPN
+cleanup_outline() {
+    print_warning "Выполняется очистка Outline VPN..."
+    
+    # Остановка и удаление всех контейнеров, связанных с Outline
+    print_info "Остановка и удаление всех контейнеров Outline..."
+    
+    # Остановка и удаление контейнеров Outline
+    docker stop $(docker ps -q --filter "ancestor=quay.io/outline/shadowbox:stable") 2>/dev/null || true
+    docker rm $(docker ps -aq --filter "ancestor=quay.io/outline/shadowbox:stable") 2>/dev/null || true
+    
+    # Остановка и удаление watchtower (часто устанавливается вместе с Outline)
+    print_info "Остановка и удаление watchtower..."
+    docker stop watchtower 2>/dev/null || true
+    docker rm watchtower 2>/dev/null || true
+    
+    # Остановка и удаление других возможных контейнеров Outline
+    docker stop $(docker ps -q --filter "name=outline*") 2>/dev/null || true
+    docker rm $(docker ps -aq --filter "name=outline*") 2>/dev/null || true
+    
+    # Остановка и удаление контейнеров с портом 8080 (часто используется Outline)
+    print_info "Остановка контейнеров с портом 8080..."
+    local containers_8080=$(docker ps -q --filter "publish=8080")
+    if [[ -n "$containers_8080" ]]; then
+        docker stop $containers_8080 2>/dev/null || true
+        docker rm $containers_8080 2>/dev/null || true
+    fi
+    
+    # Удаление образов Outline
+    print_info "Удаление образов Outline..."
+    docker rmi quay.io/outline/shadowbox:stable 2>/dev/null || true
+    docker rmi quay.io/outline/prometheus:stable 2>/dev/null || true
+    docker rmi containrrr/watchtower:latest 2>/dev/null || true
+    
+    # Удаление директорий с данными Outline
+    print_info "Удаление директорий с данными Outline..."
+    rm -rf /opt/outline 2>/dev/null || true
+    rm -rf /var/lib/outline 2>/dev/null || true
+    
+    # Удаление конфигурационных файлов
+    print_info "Удаление конфигурационных файлов Outline..."
+    rm -rf /opt/outline-server 2>/dev/null || true
+    rm -rf /etc/outline 2>/dev/null || true
+    
+    # Удаление systemd сервисов (если есть)
+    print_info "Удаление systemd сервисов Outline..."
+    systemctl stop outline-server 2>/dev/null || true
+    systemctl disable outline-server 2>/dev/null || true
+    rm -f /etc/systemd/system/outline-server.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    
+    # Очистка Docker томов, связанных с Outline
+    print_info "Очистка Docker томов Outline..."
+    docker volume rm $(docker volume ls -q --filter "name=outline*") 2>/dev/null || true
+    
+    # Очистка Docker сетей, связанных с Outline
+    print_info "Очистка Docker сетей Outline..."
+    docker network rm $(docker network ls -q --filter "name=outline*") 2>/dev/null || true
+    
+    print_success "Очистка Outline VPN завершена"
 }
 
 
@@ -723,6 +823,109 @@ install_3x_ui_official() {
     read -p "Нажмите Enter для возврата в главное меню..."
 }
 
+# Функция настройки Outline VPN
+setup_outline() {
+    print_header
+    print_info "Настройка Outline VPN"
+    print_separator
+    
+    CURRENT_VPN="outline"
+    
+    # Выбор IP-адреса
+    get_available_ips
+    
+    print_separator
+    print_info "Параметры установки:"
+    echo -e "  VPN: ${WHITE}$CURRENT_VPN${NC}"
+    echo -e "  IP-адрес: ${WHITE}$CURRENT_IP${NC} (интерфейс: $CURRENT_INTERFACE)"
+    print_separator
+    
+    read -p "Продолжить установку? (y/N): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        install_outline
+    else
+        print_info "Установка отменена"
+        return 1
+    fi
+}
+
+# Функция установки Outline VPN
+install_outline() {
+    print_header
+    print_info "Установка Outline VPN"
+    print_separator
+    
+    print_info "Outline VPN - это бесплатный инструмент с открытым исходным кодом от Google"
+    print_info "для развертывания собственной VPN на вашем сервере"
+    
+    # Настройка файервола
+    print_info "Настройка файервола..."
+    
+    case $PACKAGE_MANAGER in
+        "apt")
+            # Настройка UFW для Ubuntu/Debian
+            ufw allow 443/tcp
+            ufw allow 1024:65535/tcp
+            ufw allow 22/tcp
+            ufw --force enable
+            print_success "UFW настроен и включен"
+            ;;
+        "dnf"|"yum")
+            # Настройка firewalld для RHEL/CentOS
+            firewall-cmd --permanent --add-port=443/tcp
+            firewall-cmd --permanent --add-port=1024-65535/tcp
+            firewall-cmd --permanent --add-port=22/tcp
+            firewall-cmd --reload
+            firewall-cmd --set-default-zone=public
+            print_success "Firewalld настроен"
+            ;;
+        "pacman")
+            # Настройка UFW для Arch
+            ufw allow 443/tcp
+            ufw allow 1024:65535/tcp
+            ufw allow 22/tcp
+            ufw --force enable
+            print_success "UFW настроен и включен"
+            ;;
+    esac
+    
+    # Установка Outline Server
+    print_info "Установка Outline Server..."
+    
+    # Загрузка и запуск официального скрипта установки
+    if sudo wget -qO- https://raw.githubusercontent.com/Jigsaw-Code/outline-server/master/src/server_manager/install_scripts/install_server.sh | bash; then
+        print_success "Outline Server успешно установлен!"
+        
+        # Получение информации о сервере
+        print_info "Информация о сервере (сохраните для Outline Manager):"
+        print_info "Скопируйте и сохраните вывод выше для настройки Outline Manager"
+        
+        print_separator
+        print_info "Следующие шаги:"
+        print_info "1. Скачайте Outline Manager для вашей ОС:"
+        print_info "   - Windows/Mac/Linux: https://getoutline.org/get-started/#step-3"
+        print_info "2. Запустите Outline Manager и выберите 'Настроить Outline где угодно'"
+        print_info "3. Вставьте полученный ключ и адрес сервера"
+        print_info "4. Создайте ключи для клиентов в Outline Manager"
+        print_info "5. Скачайте клиенты Outline для устройств:"
+        print_info "   - Android: Google Play Store"
+        print_info "   - iOS: App Store"
+        print_info "   - Windows/Mac/Linux: https://getoutline.org/get-started/#step-3"
+        
+    else
+        print_error "Ошибка при установке Outline Server"
+        print_info "Возможные решения:"
+        print_info "- Проверьте подключение к интернету"
+        print_info "- Попробуйте запустить скрипт позже (репозиторий может быть временно недоступен)"
+        print_info "- Убедитесь, что порты 443 и 1024-65535 открыты"
+    fi
+    
+    print_separator
+    read -p "Нажмите Enter для возврата в главное меню..."
+}
+
 # Функция показа статуса
 show_status() {
     print_header
@@ -761,8 +964,15 @@ show_status() {
         print_success "3x-ui: установлен (исполняемые файлы найдены)"
     fi
     
+    # Проверка Outline VPN
+    if docker ps --format "{{.Names}}" | grep -q "shadowbox"; then
+        print_success "Outline VPN: установлен и запущен (Docker контейнер)"
+    elif [[ -d "/opt/outline" || -d "/var/lib/outline" ]]; then
+        print_success "Outline VPN: установлен (директории найдены)"
+    fi
+    
     # Если нет установленных VPN
-    if [[ ! -d "$DEFAULT_DATA_PATH" && ! -f "/usr/local/bin/x-ui" && ! -f "/usr/bin/x-ui" ]]; then
+    if [[ ! -d "$DEFAULT_DATA_PATH" && ! -f "/usr/local/bin/x-ui" && ! -f "/usr/bin/x-ui" && ! -d "/opt/outline" && ! -d "/var/lib/outline" ]]; then
         print_warning "VPN не установлены"
     fi
     
@@ -778,17 +988,18 @@ main_menu() {
         echo
         echo -e "  ${CYAN}1)${NC} Установить wg-easy"
         echo -e "  ${CYAN}2)${NC} Установить 3x-ui"
-        echo -e "  ${CYAN}3)${NC} Показать статус"
-        echo -e "  ${CYAN}4)${NC} Остановить VPN"
-        echo -e "  ${CYAN}5)${NC} Очистка wg-easy"
-        echo -e "  ${CYAN}6)${NC} Очистка 3x-ui"
-        echo -e "  ${CYAN}7)${NC} Полная очистка (удалить всё)"
-        echo -e "  ${CYAN}8)${NC} Выход"
+        echo -e "  ${CYAN}3)${NC} Установить Outline VPN"
+        echo -e "  ${CYAN}4)${NC} Показать статус"
+        echo -e "  ${CYAN}5)${NC} Остановить VPN"
+        echo -e "  ${CYAN}6)${NC} Очистка wg-easy"
+        echo -e "  ${CYAN}7)${NC} Очистка 3x-ui"
+        echo -e "  ${CYAN}8)${NC} Очистка Outline VPN"
+        echo -e "  ${CYAN}9)${NC} Полная очистка (удалить всё)"
+        echo -e "  ${CYAN}10)${NC} Выход"
         echo
         print_separator
         
-        read -p "Выберите действие (1-8): " -n 1 -r
-        echo
+        read -p "Выберите действие (1-10): " -r
         
         case $REPLY in
             1)
@@ -798,15 +1009,18 @@ main_menu() {
                 setup_3x_ui
                 ;;
             3)
-                show_status
+                setup_outline
                 ;;
             4)
+                show_status
+                ;;
+            5)
                 print_info "Остановка VPN..."
                 stop_vpn "wg-easy"
                 stop_vpn "3x-ui"
                 read -p "Нажмите Enter для возврата в главное меню..."
                 ;;
-            5)
+            6)
                 print_warning "ВНИМАНИЕ: Это действие удалит wg-easy и все его данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -815,7 +1029,7 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            6)
+            7)
                 print_warning "ВНИМАНИЕ: Это действие удалит 3x-ui и все его данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -824,7 +1038,16 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            7)
+            8)
+                print_warning "ВНИМАНИЕ: Это действие удалит Outline VPN и все его данные!"
+                read -p "Вы уверены? (y/N): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    cleanup_outline
+                    read -p "Нажмите Enter для возврата в главное меню..."
+                fi
+                ;;
+            9)
                 print_warning "ВНИМАНИЕ: Это действие удалит ВСЕ контейнеры, образы и данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -833,7 +1056,7 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            8)
+            10)
                 print_info "До свидания!"
                 exit 0
                 ;;
