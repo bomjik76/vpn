@@ -34,9 +34,12 @@ CURRENT_VPN=""
 CURRENT_PORT=""
 CURRENT_WEB_PORT=""
 CURRENT_PASSWORD=""
+CURRENT_PASSWORD_HASH=""
+CURRENT_PASSWORD_HASH_ESCAPED=""
 CURRENT_DATA_PATH=""
 CURRENT_IP=""
 CURRENT_INTERFACE=""
+CURRENT_LANG=""
 OS_TYPE=""
 PACKAGE_MANAGER=""
 
@@ -322,6 +325,48 @@ generate_password() {
     fi
 }
 
+# Проверка и загрузка образа wg-easy
+ensure_wg_easy_image() {
+    print_info "Проверка образа wg-easy..."
+    
+    if ! docker images | grep -q "ghcr.io/wg-easy/wg-easy"; then
+        print_info "Образ wg-easy не найден, загружаем..."
+        if docker pull ghcr.io/wg-easy/wg-easy:latest; then
+            print_success "Образ wg-easy загружен"
+        else
+            print_error "Не удалось загрузить образ wg-easy"
+            exit 1
+        fi
+    else
+        print_success "Образ wg-easy уже доступен"
+    fi
+}
+
+# Генерация bcrypt-хеша пароля для wg-easy
+generate_bcrypt_hash() {
+    print_info "Генерирую bcrypt-хэш..."
+    
+    # Убеждаемся что образ доступен
+    ensure_wg_easy_image
+    
+    # Генерируем хеш используя команду wgpw
+    echo "Генерирую bcrypt-хэш..."
+    CURRENT_PASSWORD_HASH=$(docker run --rm ghcr.io/wg-easy/wg-easy wgpw "$CURRENT_PASSWORD" | grep PASSWORD_HASH | cut -d= -f2- | tr -d "'\" ")
+    
+    if [[ -n "$CURRENT_PASSWORD_HASH" ]]; then
+        print_info "Исходный bcrypt-хеш: $CURRENT_PASSWORD_HASH"
+        
+        # Заменяем $ на $$ для docker-compose
+        CURRENT_PASSWORD_HASH_ESCAPED=$(echo "$CURRENT_PASSWORD_HASH" | sed 's/\$/\$\$/g')
+        print_info "Хеш для docker-compose: $CURRENT_PASSWORD_HASH_ESCAPED"
+        print_success "bcrypt-хеш сгенерирован"
+        return 0
+    fi
+    
+    print_error "Не удалось сгенерировать bcrypt-хеш"
+    return 1
+}
+
 # Функция получения списка IP-адресов
 get_available_ips() {
     print_info "Получение списка доступных IP-адресов..."
@@ -404,69 +449,72 @@ get_available_ips() {
     CURRENT_INTERFACE="$selected_interface"
 }
 
-# Функция создания docker-compose.yml для wg-easy
-create_wg_easy_compose() {
-    local compose_file="$CURRENT_DATA_PATH/docker-compose.yml"
-    
-    print_info "Создание docker-compose.yml для wg-easy..."
-    
-    cat > "$compose_file" << EOF
-version: '3.8'
 
-services:
-  wg-easy:
-    image: weejewel/wg-easy:latest
-    container_name: wg-easy
-    restart: unless-stopped
-    ports:
-      - "$CURRENT_PORT:51820/udp"
-      - "$CURRENT_WEB_PORT:51821/tcp"
-    environment:
-      - WG_HOST=$CURRENT_IP
-      - PASSWORD=$CURRENT_PASSWORD
-      - WG_PORT=$CURRENT_PORT
-      - WG_DEFAULT_ADDRESS=10.0.0.x
-      - WG_DEFAULT_DNS=1.1.1.1
-      - WG_MTU=1420
-      - WG_PERSISTENT_KEEPALIVE=25
-      - WG_LOG_LEVEL=info
-      - WG_STORAGE=sqlite3
-      - WG_DB_PATH=/etc/wireguard/db
-      - WG_CONFIG_PATH=/etc/wireguard
-      - WG_DEVICE=wg0
-      - WG_ALLOWED_IPS=0.0.0.0/0
-      - WG_DISABLED=false
-    volumes:
-      - ./data:/etc/wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    sysctls:
-      - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv4.conf.default.src_valid_mark=1
-    networks:
-      - wg-network
 
-networks:
-  wg-network:
-    driver: bridge
-EOF
-    
-    print_success "docker-compose.yml создан"
+# Настройка файервола для wg-easy
+configure_firewall_wg_easy() {
+	print_info "Настройка файервола для wg-easy..."
+	case $PACKAGE_MANAGER in
+		"apt"|"pacman")
+			if command -v ufw &> /dev/null; then
+				ufw allow "${CURRENT_PORT}/udp"
+				ufw allow "${CURRENT_WEB_PORT}/tcp"
+				ufw --force enable
+				print_success "Открыты порты: ${CURRENT_PORT}/udp (WireGuard), ${CURRENT_WEB_PORT}/tcp (веб)"
+			fi
+			;;
+		"dnf"|"yum")
+			if command -v firewall-cmd &> /dev/null; then
+				firewall-cmd --permanent --add-port="${CURRENT_PORT}/udp"
+				firewall-cmd --permanent --add-port="${CURRENT_WEB_PORT}/tcp"
+				firewall-cmd --reload
+				print_success "Открыты порты: ${CURRENT_PORT}/udp (WireGuard), ${CURRENT_WEB_PORT}/tcp (веб)"
+			fi
+			;;
+	esac
+}
+
+# Настройка файервола для 3x-ui (веб-панель по умолчанию 54321/tcp)
+configure_firewall_3x_ui() {
+	print_info "Настройка файервола для 3x-ui..."
+	local ui_port=54321
+	case $PACKAGE_MANAGER in
+		"apt"|"pacman")
+			if command -v ufw &> /dev/null; then
+				ufw allow "${ui_port}/tcp"
+				ufw allow 22/tcp
+				ufw allow 80/tcp
+				ufw allow 443/tcp
+				ufw --force enable
+				print_success "Открыты порты: ${ui_port}/tcp (панель), 80/tcp, 443/tcp, 22/tcp"
+			fi
+			;;
+		"dnf"|"yum")
+			if command -v firewall-cmd &> /dev/null; then
+				firewall-cmd --permanent --add-port="${ui_port}/tcp"
+				firewall-cmd --permanent --add-service=ssh
+				firewall-cmd --permanent --add-service=http
+				firewall-cmd --permanent --add-service=https
+				firewall-cmd --reload
+				print_success "Открыты порты: ${ui_port}/tcp (панель), HTTP/HTTPS, SSH"
+			fi
+			;;
+	esac
 }
 
 # Функция запуска wg-easy
 start_wg_easy() {
     print_info "Запуск wg-easy..."
     
-    cd "$CURRENT_DATA_PATH"
+    # Останавливаем и удаляем ранее запущенный контейнер, если есть
+    docker rm -f wg-easy 2>/dev/null || true
     
-    if docker-compose up -d; then
+    # Переходим в директорию с docker-compose.yml
+    cd "$DEFAULT_DATA_PATH"
+    
+    # Запуск wg-easy через docker-compose
+    if docker compose up -d; then
         print_success "wg-easy успешно запущен"
-        print_info "Веб-интерфейс доступен по адресу: http://$CURRENT_IP:$CURRENT_WEB_PORT"
-        print_info "Логин: admin"
-        print_info "Пароль: $CURRENT_PASSWORD"
     else
         print_error "Ошибка при запуске wg-easy"
         exit 1
@@ -480,9 +528,21 @@ stop_vpn() {
     local vpn_name=$1
     print_info "Остановка $vpn_name..."
     
-    if [[ -d "$CURRENT_DATA_PATH" ]]; then
+    if [[ "$vpn_name" == "wg-easy" ]]; then
+        # Для wg-easy используем docker-compose
+        if [[ -d "$DEFAULT_DATA_PATH" ]]; then
+            cd "$DEFAULT_DATA_PATH"
+            if docker compose down; then
+                print_success "$vpn_name остановлен"
+            else
+                print_error "Ошибка при остановке $vpn_name"
+            fi
+        else
+            print_warning "Директория $DEFAULT_DATA_PATH не найдена"
+        fi
+    elif [[ -d "$CURRENT_DATA_PATH" ]]; then
         cd "$CURRENT_DATA_PATH"
-        if docker-compose down; then
+        if docker compose down; then
             print_success "$vpn_name остановлен"
         else
             print_error "Ошибка при остановке $vpn_name"
@@ -577,14 +637,20 @@ cleanup_3x_ui() {
 cleanup_wg_easy() {
     print_warning "Выполняется очистка wg-easy..."
     
-    # Остановка и удаление Docker контейнеров wg-easy
+    # Остановка и удаление Docker контейнеров wg-easy через docker-compose
     print_info "Остановка и удаление Docker контейнеров wg-easy..."
+    if [[ -d "$DEFAULT_DATA_PATH" ]]; then
+        cd "$DEFAULT_DATA_PATH"
+        docker compose down 2>/dev/null || true
+    fi
+    
+    # Остановка и удаление контейнера wg-easy напрямую (если docker-compose не сработал)
     docker stop wg-easy 2>/dev/null || true
     docker rm wg-easy 2>/dev/null || true
     
     # Удаление образа wg-easy
     print_info "Удаление образа wg-easy..."
-    docker rmi weejewel/wg-easy:latest 2>/dev/null || true
+    docker rmi ghcr.io/wg-easy/wg-easy:latest 2>/dev/null || true
     
     # Удаление директорий с данными wg-easy
     print_info "Удаление директорий с данными wg-easy..."
@@ -691,26 +757,61 @@ setup_wg_easy() {
     
     CURRENT_VPN="wg-easy"
     
-    get_user_input "Введите порт для WireGuard" "$DEFAULT_PORT" "CURRENT_PORT"
-    get_user_input "Введите порт для веб-интерфейса" "8080" "CURRENT_WEB_PORT"
-    get_user_input "Введите пароль для веб-интерфейса" "" "CURRENT_PASSWORD"
-    get_user_input "Введите путь для данных" "$DEFAULT_DATA_PATH" "CURRENT_DATA_PATH"
-    
-    # Генерация пароля если не указан
-    generate_password
+    # === 1. Сбор данных у пользователя ===
+    get_user_input "Введите порт для Web UI" "51821" "CURRENT_WEB_PORT"
+    get_user_input "Введите порт WireGuard (UDP)" "51820" "CURRENT_PORT"
     
     # Выбор IP-адреса
+    print_info "Выбор IP-адреса для wg-easy..."
     get_available_ips
+    
+    # Выбор языка интерфейса
+    echo -e "${CYAN}Выберите язык интерфейса:${NC}"
+    echo -e "  ${CYAN}1)${NC} Русский (по умолчанию)"
+    echo -e "  ${CYAN}2)${NC} Английский"
+    echo
+    read -p "Выберите язык (1-2) [1]: " -r lang_choice
+    lang_choice=${lang_choice:-1}
+    
+    case $lang_choice in
+        1|"")
+            CURRENT_LANG="ru"
+            ;;
+        2)
+            CURRENT_LANG="en"
+            ;;
+        *)
+            print_error "Неверный выбор языка. Используется русский по умолчанию."
+            CURRENT_LANG="ru"
+            ;;
+    esac
+    
+    # Запрос пароля (без отображения) с повторными попытками
+    while true; do
+        read -rsp "Введите пароль для Web UI: " CURRENT_PASSWORD
+        echo
+        read -rsp "Повторите пароль: " CURRENT_PASSWORD2
+        echo
+        
+        if [ "$CURRENT_PASSWORD" != "$CURRENT_PASSWORD2" ]; then
+            print_error "Пароли не совпадают! Попробуйте еще раз."
+            echo
+        else
+            break
+        fi
+    done
+    
+
     
     print_separator
     print_info "Параметры установки:"
     echo -e "  VPN: ${WHITE}$CURRENT_VPN${NC}"
+    echo -e "  WG_HOST: ${WHITE}$CURRENT_IP${NC}"
+    echo -e "  Порт Web UI: ${WHITE}$CURRENT_WEB_PORT${NC}"
     echo -e "  Порт WireGuard: ${WHITE}$CURRENT_PORT${NC}"
-    echo -e "  Порт веб-интерфейса: ${WHITE}$CURRENT_WEB_PORT${NC}"
-    echo -e "  Пароль: ${WHITE}$CURRENT_PASSWORD${NC}"
-    echo -e "  Путь данных: ${WHITE}$CURRENT_DATA_PATH${NC}"
-    echo -e "  IP-адрес: ${WHITE}$CURRENT_IP${NC} (интерфейс: $CURRENT_INTERFACE)"
-    print_separator
+    echo -e "  Язык интерфейса: ${WHITE}$CURRENT_LANG${NC}"
+    echo -e "  Путь данных: ${WHITE}$DEFAULT_DATA_PATH${NC}"
+
     
     read -p "Продолжить установку? (y/N): " -n 1 -r
     echo
@@ -772,24 +873,57 @@ install_wg_easy() {
         fi
     fi
     
-    # Создание директории
-    create_data_directory "$CURRENT_DATA_PATH"
+    # Проверка и загрузка образа wg-easy (если необходимо)
+    ensure_wg_easy_image
     
-    # Загрузка последней версии wg-easy
-    print_info "Загрузка последней версии wg-easy (Node.js v18)..."
-    docker pull weejewel/wg-easy:latest
+    # Генерация bcrypt-хеша пароля для PASSWORD_HASH
+    if ! generate_bcrypt_hash; then
+        print_error "Ошибка генерации хеша. Установка прервана."
+        return 1
+    fi
     
-    # Создание docker-compose.yml
-    create_wg_easy_compose
-    
-    # Запуск wg-easy
-    start_wg_easy
+    # === 3. Подготовка папки и compose-файла ===
+    print_info "Подготовка папки и compose-файла..."
+    INSTALL_DIR="$DEFAULT_DATA_PATH"
+    mkdir -p "$INSTALL_DIR/etc_wireguard"
+    cd "$INSTALL_DIR"
+
+    cat > docker-compose.yml <<EOF
+version: "3.8"
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:latest
+    container_name: wg-easy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1
+      net.ipv4.ip_forward: 1
+    ports:
+      - "${CURRENT_PORT}:${CURRENT_PORT}/udp"
+      - "${CURRENT_WEB_PORT}:${CURRENT_WEB_PORT}/tcp"
+    volumes:
+      - ./etc_wireguard:/etc/wireguard
+    environment:
+      - WG_HOST=${CURRENT_IP}
+      - PASSWORD_HASH=${CURRENT_PASSWORD_HASH_ESCAPED}
+      - PORT=${CURRENT_WEB_PORT}
+      - WG_PORT=${CURRENT_PORT}
+      - LANG=${CURRENT_LANG}
+EOF
+
+    # === 4. Запуск ===
+    print_info "Запускаю wg-easy..."
+    docker compose up -d
     
     print_separator
-    print_success "wg-easy успешно установлен!"
-    print_info "Веб-интерфейс: http://$CURRENT_IP:$CURRENT_WEB_PORT"
+    print_success "Установка завершена!"
+    print_info "Web UI: http://$CURRENT_IP:$CURRENT_WEB_PORT"
     print_info "Логин: admin"
     print_info "Пароль: $CURRENT_PASSWORD"
+    print_info "Файлы WireGuard будут храниться в: $DEFAULT_DATA_PATH/etc_wireguard"
     print_separator
     
     read -p "Нажмите Enter для возврата в главное меню..."
@@ -806,6 +940,9 @@ install_3x_ui_official() {
     print_info "Установка 3x-ui через официальный скрипт"
     print_info "Официальный скрипт установки: https://github.com/MHSanaei/3x-ui"
     
+    # Открываем необходимые порты перед запуском установщика
+    configure_firewall_3x_ui
+
     print_info "Загрузка и запуск официального скрипта установки..."
     
     # Загрузка и запуск официального скрипта
