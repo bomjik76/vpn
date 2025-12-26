@@ -2,10 +2,8 @@
 
 # VPN Installer Script
 # Универсальный скрипт для установки VPN
-# Поддерживает: wg-easy (WireGuard через Docker), 3x-ui (Xray через официальный скрипт)
+# Поддерживает: wg-easy (WireGuard через Docker), 3x-ui (Xray через официальный скрипт), Outline VPN, Remnawave, Hysteria2
 # Поддерживает: RedHat, Ubuntu, Debian и их производные
-
-set -e
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -19,7 +17,7 @@ NC='\033[0m' # No Color
 
 # Константы
 SCRIPT_NAME="VPN Installer"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 LOG_FILE="/tmp/vpn-installer.log"
 DOCKER_COMPOSE_VERSION="2.20.0"
 
@@ -58,7 +56,7 @@ print_header() {
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║              Универсальный установщик VPN                    ║"
-    echo "║  wg-easy (Docker) + 3x-ui + Outline VPN (официальные скрипты)║"
+    echo "║   wg-easy | 3x-ui | Outline | Remnawave | Hysteria2          ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -172,52 +170,17 @@ install_dependencies() {
     
     case $PACKAGE_MANAGER in
         "apt")
-            apt install -y curl wget git ca-certificates gnupg lsb-release ufw
+            apt install -y curl wget git ca-certificates gnupg lsb-release
             ;;
         "dnf"|"yum")
-            $PACKAGE_MANAGER install -y curl wget git ca-certificates gnupg firewalld
+            $PACKAGE_MANAGER install -y curl wget git ca-certificates gnupg
             ;;
         "pacman")
-            pacman -S --noconfirm curl wget git ca-certificates gnupg ufw
+            pacman -S --noconfirm curl wget git ca-certificates gnupg
             ;;
     esac
     
     print_success "Зависимости установлены"
-    
-    # Настройка базового файервола
-    print_info "Настройка базового файервола..."
-    
-    case $PACKAGE_MANAGER in
-        "apt")
-            # Настройка UFW для Ubuntu/Debian
-            if command -v ufw &> /dev/null; then
-                ufw --force reset
-                ufw default deny incoming
-                ufw default allow outgoing
-                ufw allow 22/tcp
-                print_success "UFW настроен (SSH разрешен)"
-            fi
-            ;;
-        "dnf"|"yum")
-            # Настройка firewalld для RHEL/CentOS
-            if command -v firewall-cmd &> /dev/null; then
-                firewall-cmd --set-default-zone=public
-                firewall-cmd --permanent --add-service=ssh
-                firewall-cmd --reload
-                print_success "Firewalld настроен (SSH разрешен)"
-            fi
-            ;;
-        "pacman")
-            # Настройка UFW для Arch
-            if command -v ufw &> /dev/null; then
-                ufw --force reset
-                ufw default deny incoming
-                ufw default allow outgoing
-                ufw allow 22/tcp
-                print_success "UFW настроен (SSH разрешен)"
-            fi
-            ;;
-    esac
 }
 
 # Функция установки Docker
@@ -304,6 +267,185 @@ check_existing_containers() {
     fi
     
     print_success "Существующие контейнеры не найдены"
+    return 0
+}
+
+# Функция проверки установленного wg-easy
+check_wg_easy_installed() {
+    local found=false
+    
+    # Проверка контейнера
+    if docker ps -a --format "{{.Names}}" | grep -q "^wg-easy$"; then
+        print_warning "⚠ wg-easy уже установлен: найден Docker контейнер 'wg-easy'"
+        found=true
+    fi
+    
+    # Проверка директории с данными
+    if [[ -d "$DEFAULT_DATA_PATH" && -f "$DEFAULT_DATA_PATH/docker-compose.yml" ]]; then
+        print_warning "⚠ wg-easy уже установлен: найдена директория $DEFAULT_DATA_PATH с docker-compose.yml"
+        found=true
+    fi
+    
+    # Проверка запущенного контейнера
+    if docker ps --format "{{.Names}}" | grep -q "^wg-easy$"; then
+        print_warning "⚠ wg-easy уже запущен"
+        found=true
+    fi
+    
+    if [[ "$found" == "true" ]]; then
+        echo
+        print_warning "Продолжение установки может привести к конфликтам или перезаписи существующей установки!"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Функция проверки установленного 3x-ui
+check_3x_ui_installed() {
+    local found=false
+    
+    # Проверка команды x-ui
+    if command -v x-ui &> /dev/null; then
+        print_warning "⚠ 3x-ui уже установлен: команда 'x-ui' доступна в системе"
+        found=true
+    fi
+    
+    # Проверка исполняемых файлов
+    if [[ -f "/usr/local/bin/x-ui" || -f "/usr/bin/x-ui" ]]; then
+        print_warning "⚠ 3x-ui уже установлен: найден исполняемый файл x-ui"
+        found=true
+    fi
+    
+    # Проверка systemd сервиса
+    if systemctl list-unit-files | grep -q "x-ui.service"; then
+        print_warning "⚠ 3x-ui уже установлен: найден systemd сервис x-ui"
+        found=true
+    fi
+    
+    # Проверка запущенного сервиса
+    if systemctl is-active --quiet x-ui 2>/dev/null; then
+        print_warning "⚠ 3x-ui уже запущен (systemd сервис активен)"
+        found=true
+    fi
+    
+    if [[ "$found" == "true" ]]; then
+        echo
+        print_warning "Продолжение установки может привести к конфликтам или перезаписи существующей установки!"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Функция проверки установленного Outline VPN
+check_outline_installed() {
+    local found=false
+    
+    # Проверка контейнеров Outline
+    if docker ps -a --format "{{.Names}}" | grep -q "shadowbox\|outline"; then
+        print_warning "⚠ Outline VPN уже установлен: найдены Docker контейнеры"
+        found=true
+    fi
+    
+    # Проверка запущенных контейнеров
+    if docker ps --format "{{.Names}}" | grep -q "shadowbox\|outline"; then
+        print_warning "⚠ Outline VPN уже запущен"
+        found=true
+    fi
+    
+    # Проверка директорий
+    if [[ -d "/opt/outline" || -d "/var/lib/outline" || -d "/opt/outline-server" ]]; then
+        print_warning "⚠ Outline VPN уже установлен: найдены директории с данными"
+        found=true
+    fi
+    
+    # Проверка systemd сервиса
+    if systemctl list-unit-files | grep -q "outline-server.service"; then
+        print_warning "⚠ Outline VPN уже установлен: найден systemd сервис outline-server"
+        found=true
+    fi
+    
+    if [[ "$found" == "true" ]]; then
+        echo
+        print_warning "Продолжение установки может привести к конфликтам или перезаписи существующей установки!"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Функция проверки установленного Remnawave
+check_remnawave_installed() {
+    local found=false
+    
+    # Проверка Docker контейнеров Remnawave
+    if docker ps -a --format "{{.Names}}" | grep -q "remnawave-panel\|remnawave-postgres"; then
+        print_warning "⚠ Remnawave уже установлен: найдены Docker контейнеры"
+        found=true
+    fi
+    
+    # Проверка директорий
+    if [[ -d "/opt/remnawave/panel" && -f "/opt/remnawave/panel/docker-compose.yml" ]]; then
+        print_warning "⚠ Remnawave Panel уже установлен: найдена директория с конфигурацией"
+        found=true
+    fi
+    
+    # Проверка запущенных контейнеров
+    if docker ps --format "{{.Names}}" | grep -q "remnawave-panel"; then
+        print_warning "⚠ Remnawave Panel уже запущен"
+        found=true
+    fi
+    
+    if [[ "$found" == "true" ]]; then
+        echo
+        print_warning "Продолжение установки может привести к конфликтам или перезаписи существующей установки!"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Функция проверки установленного Hysteria2
+check_hysteria2_installed() {
+    local found=false
+    
+    # Проверка команды hysteria
+    if command -v hysteria &> /dev/null; then
+        print_warning "⚠ Hysteria2 уже установлен: команда 'hysteria' доступна в системе"
+        found=true
+    fi
+    
+    # Проверка исполняемых файлов
+    if [[ -f "/usr/local/bin/hysteria" || -f "/usr/bin/hysteria" ]]; then
+        print_warning "⚠ Hysteria2 уже установлен: найден исполняемый файл"
+        found=true
+    fi
+    
+    # Проверка директорий
+    if [[ -d "/opt/hysteria" || -d "/etc/hysteria" ]]; then
+        print_warning "⚠ Hysteria2 уже установлен: найдены директории с данными"
+        found=true
+    fi
+    
+    # Проверка systemd сервиса
+    if systemctl list-unit-files | grep -q "hysteria.service\|hysteria-server.service"; then
+        print_warning "⚠ Hysteria2 уже установлен: найден systemd сервис"
+        found=true
+    fi
+    
+    # Проверка запущенного сервиса
+    if systemctl is-active --quiet hysteria 2>/dev/null || systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        print_warning "⚠ Hysteria2 уже запущен (systemd сервис активен)"
+        found=true
+    fi
+    
+    if [[ "$found" == "true" ]]; then
+        echo
+        print_warning "Продолжение установки может привести к конфликтам или перезаписи существующей установки!"
+        return 1
+    fi
+    
     return 0
 }
 
@@ -451,56 +593,6 @@ get_available_ips() {
 
 
 
-# Настройка файервола для wg-easy
-configure_firewall_wg_easy() {
-	print_info "Настройка файервола для wg-easy..."
-	case $PACKAGE_MANAGER in
-		"apt"|"pacman")
-			if command -v ufw &> /dev/null; then
-				ufw allow "${CURRENT_PORT}/udp"
-				ufw allow "${CURRENT_WEB_PORT}/tcp"
-				ufw --force enable
-				print_success "Открыты порты: ${CURRENT_PORT}/udp (WireGuard), ${CURRENT_WEB_PORT}/tcp (веб)"
-			fi
-			;;
-		"dnf"|"yum")
-			if command -v firewall-cmd &> /dev/null; then
-				firewall-cmd --permanent --add-port="${CURRENT_PORT}/udp"
-				firewall-cmd --permanent --add-port="${CURRENT_WEB_PORT}/tcp"
-				firewall-cmd --reload
-				print_success "Открыты порты: ${CURRENT_PORT}/udp (WireGuard), ${CURRENT_WEB_PORT}/tcp (веб)"
-			fi
-			;;
-	esac
-}
-
-# Настройка файервола для 3x-ui (веб-панель по умолчанию 54321/tcp)
-configure_firewall_3x_ui() {
-	print_info "Настройка файервола для 3x-ui..."
-	local ui_port=54321
-	case $PACKAGE_MANAGER in
-		"apt"|"pacman")
-			if command -v ufw &> /dev/null; then
-				ufw allow "${ui_port}/tcp"
-				ufw allow 22/tcp
-				ufw allow 80/tcp
-				ufw allow 443/tcp
-				ufw --force enable
-				print_success "Открыты порты: ${ui_port}/tcp (панель), 80/tcp, 443/tcp, 22/tcp"
-			fi
-			;;
-		"dnf"|"yum")
-			if command -v firewall-cmd &> /dev/null; then
-				firewall-cmd --permanent --add-port="${ui_port}/tcp"
-				firewall-cmd --permanent --add-service=ssh
-				firewall-cmd --permanent --add-service=http
-				firewall-cmd --permanent --add-service=https
-				firewall-cmd --reload
-				print_success "Открыты порты: ${ui_port}/tcp (панель), HTTP/HTTPS, SSH"
-			fi
-			;;
-	esac
-}
 
 # Функция запуска wg-easy
 start_wg_easy() {
@@ -565,26 +657,11 @@ cleanup() {
     # Очистка Outline VPN
     cleanup_outline
     
-    # Остановка и удаление всех остальных контейнеров
-    print_info "Остановка и удаление всех контейнеров..."
-    docker stop $(docker ps -aq) 2>/dev/null || true
-    docker rm $(docker ps -aq) 2>/dev/null || true
+    # Очистка Remnawave
+    cleanup_remnawave
     
-    # Удаление всех образов
-    print_info "Удаление всех образов..."
-    docker rmi $(docker images -q) 2>/dev/null || true
-    
-    # Удаление всех томов
-    print_info "Удаление всех томов..."
-    docker volume rm $(docker volume ls -q) 2>/dev/null || true
-    
-    # Удаление всех сетей
-    print_info "Удаление всех сетей..."
-    docker network rm $(docker network ls -q) 2>/dev/null || true
-    
-    # Очистка логов скрипта
-    print_info "Очистка логов скрипта..."
-    rm -f "$LOG_FILE" 2>/dev/null || true
+    # Очистка Hysteria2
+    cleanup_hysteria2
     
     print_success "Полная очистка завершена"
 }
@@ -593,44 +670,17 @@ cleanup() {
 cleanup_3x_ui() {
     print_warning "Выполняется очистка 3x-ui..."
     
-    # Удаление директорий с данными 3x-ui
-    print_info "Удаление директорий с данными 3x-ui..."
-    rm -rf "/opt/3x-ui" 2>/dev/null || true
-    rm -rf "/usr/local/x-ui" 2>/dev/null || true
-    rm -rf "/etc/x-ui" 2>/dev/null || true
-    
-    # Удаление systemd сервиса 3x-ui
-    print_info "Удаление systemd сервиса 3x-ui..."
-    systemctl stop x-ui 2>/dev/null || true
-    systemctl disable x-ui 2>/dev/null || true
-    rm -f /etc/systemd/system/x-ui.service 2>/dev/null || true
-    rm -f /etc/systemd/system/x-ui 2>/dev/null || true
-    systemctl daemon-reload 2>/dev/null || true
-    
-    # Удаление исполняемых файлов 3x-ui
-    print_info "Удаление исполняемых файлов 3x-ui..."
-    rm -f /usr/local/bin/x-ui 2>/dev/null || true
-    rm -f /usr/bin/x-ui 2>/dev/null || true
-    
-    # Удаление конфигурационных файлов
-    print_info "Удаление конфигурационных файлов 3x-ui..."
-    rm -rf /usr/local/x-ui/config.json 2>/dev/null || true
-    rm -rf /etc/x-ui/config.json 2>/dev/null || true
-    
-    # Удаление логов 3x-ui
-    print_info "Удаление логов 3x-ui..."
-    rm -rf /var/log/x-ui 2>/dev/null || true
-    rm -rf /usr/local/x-ui/logs 2>/dev/null || true
-    
-    # Удаление пользователя x-ui (если создан)
-    print_info "Удаление пользователя x-ui..."
-    userdel -r x-ui 2>/dev/null || true
-    
-    # Очистка cron задач (если есть)
-    print_info "Очистка cron задач 3x-ui..."
-    crontab -l 2>/dev/null | grep -v "x-ui" | crontab - 2>/dev/null || true
-    
-    print_success "Очистка 3x-ui завершена"
+    # Использование официальной команды x-ui uninstall
+    if command -v x-ui &> /dev/null; then
+        print_info "Использование команды x-ui uninstall для удаления..."
+        if x-ui uninstall; then
+            print_success "3x-ui успешно удален через x-ui uninstall"
+        else
+            print_error "3x-ui успешно удален через x-ui uninstall"
+        fi
+    else
+        print_warning "x-ui не найден. Возможно, он уже удален или не был установлен."
+    fi
 }
 
 # Функция очистки wg-easy
@@ -680,17 +730,25 @@ cleanup_outline() {
     docker stop watchtower 2>/dev/null || true
     docker rm watchtower 2>/dev/null || true
     
-    # Остановка и удаление других возможных контейнеров Outline
+    # Остановка и удаление контейнера shadowbox (основной контейнер Outline)
+    print_info "Остановка и удаление shadowbox..."
+    docker stop shadowbox 2>/dev/null || true
+    docker rm shadowbox 2>/dev/null || true
+    
+    # Остановка и удаление контейнера prometheus (мониторинг Outline)
+    print_info "Остановка и удаление prometheus..."
+    docker stop prometheus 2>/dev/null || true
+    docker rm prometheus 2>/dev/null || true
+    
+    # Остановка и удаление других возможных контейнеров Outline по имени
+    print_info "Остановка и удаление других контейнеров Outline..."
     docker stop $(docker ps -q --filter "name=outline*") 2>/dev/null || true
     docker rm $(docker ps -aq --filter "name=outline*") 2>/dev/null || true
     
-    # Остановка и удаление контейнеров с портом 8080 (часто используется Outline)
-    print_info "Остановка контейнеров с портом 8080..."
-    local containers_8080=$(docker ps -q --filter "publish=8080")
-    if [[ -n "$containers_8080" ]]; then
-        docker stop $containers_8080 2>/dev/null || true
-        docker rm $containers_8080 2>/dev/null || true
-    fi
+    # Остановка и удаление контейнеров по образам Outline
+    print_info "Остановка и удаление контейнеров по образам Outline..."
+    docker stop $(docker ps -q --filter "ancestor=quay.io/outline/prometheus:stable") 2>/dev/null || true
+    docker rm $(docker ps -aq --filter "ancestor=quay.io/outline/prometheus:stable") 2>/dev/null || true
     
     # Удаление образов Outline
     print_info "Удаление образов Outline..."
@@ -726,6 +784,81 @@ cleanup_outline() {
     print_success "Очистка Outline VPN завершена"
 }
 
+# Функция очистки Remnawave
+cleanup_remnawave() {
+    print_warning "Выполняется очистка Remnawave..."
+    
+    # Остановка и удаление Docker контейнеров
+    print_info "Остановка и удаление Docker контейнеров Remnawave..."
+    if [[ -d "/opt/remnawave/panel" ]]; then
+        cd /opt/remnawave/panel
+        docker compose down -v 2>/dev/null || true
+    fi
+    
+    # Остановка контейнеров напрямую (если docker-compose не сработал)
+    docker stop remnawave-panel 2>/dev/null || true
+    docker stop remnawave-postgres 2>/dev/null || true
+    docker rm remnawave-panel 2>/dev/null || true
+    docker rm remnawave-postgres 2>/dev/null || true
+    
+    # Удаление образов
+    print_info "Удаление Docker образов Remnawave..."
+    docker rmi ghcr.io/remnawave/backend:latest 2>/dev/null || true
+    
+    # Удаление Docker томов
+    print_info "Удаление Docker томов Remnawave..."
+    docker volume rm panel_postgres_data 2>/dev/null || true
+    docker volume rm panel_panel_data 2>/dev/null || true
+    docker volume ls -q | grep remnawave | xargs -r docker volume rm 2>/dev/null || true
+    
+    # Удаление Docker сетей
+    print_info "Удаление Docker сетей Remnawave..."
+    docker network rm panel_remnawave 2>/dev/null || true
+    docker network ls -q | grep remnawave | xargs -r docker network rm 2>/dev/null || true
+    
+    # Удаление директорий с данными
+    print_info "Удаление директорий с данными Remnawave..."
+    rm -rf /opt/remnawave 2>/dev/null || true
+    rm -rf /etc/remnawave 2>/dev/null || true
+    
+    print_success "Очистка Remnawave завершена"
+}
+
+# Функция очистки Hysteria2
+cleanup_hysteria2() {
+    print_warning "Выполняется очистка Hysteria2..."
+    
+    # Остановка и отключение systemd сервисов
+    print_info "Остановка systemd сервиса Hysteria2..."
+    systemctl stop hysteria 2>/dev/null || true
+    systemctl stop hysteria-server 2>/dev/null || true
+    systemctl disable hysteria 2>/dev/null || true
+    systemctl disable hysteria-server 2>/dev/null || true
+    
+    # Удаление systemd сервисов
+    print_info "Удаление systemd сервисов Hysteria2..."
+    rm -f /etc/systemd/system/hysteria.service 2>/dev/null || true
+    rm -f /etc/systemd/system/hysteria-server.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    
+    # Удаление исполняемых файлов
+    print_info "Удаление исполняемых файлов Hysteria2..."
+    rm -f /usr/local/bin/hysteria 2>/dev/null || true
+    rm -f /usr/bin/hysteria 2>/dev/null || true
+    
+    # Удаление директорий с данными
+    print_info "Удаление директорий с данными Hysteria2..."
+    rm -rf /opt/hysteria 2>/dev/null || true
+    rm -rf /etc/hysteria 2>/dev/null || true
+    rm -rf /var/log/hysteria 2>/dev/null || true
+    
+    # Удаление сертификатов
+    print_info "Удаление сертификатов Hysteria2..."
+    rm -rf /root/.hysteria 2>/dev/null || true
+    
+    print_success "Очистка Hysteria2 завершена"
+}
+
 
 
 # Функция получения пользовательского ввода
@@ -754,6 +887,18 @@ setup_wg_easy() {
     print_header
     print_info "Настройка wg-easy"
     print_separator
+    
+    # Проверка на уже установленный wg-easy
+    if ! check_wg_easy_installed; then
+        echo
+        read -p "Продолжить установку несмотря на предупреждение? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Установка отменена"
+            return 1
+        fi
+        echo
+    fi
     
     CURRENT_VPN="wg-easy"
     
@@ -829,6 +974,18 @@ setup_3x_ui() {
     print_header
     print_info "Настройка 3x-ui"
     print_separator
+    
+    # Проверка на уже установленный 3x-ui
+    if ! check_3x_ui_installed; then
+        echo
+        read -p "Продолжить установку несмотря на предупреждение? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Установка отменена"
+            return 1
+        fi
+        echo
+    fi
     
     CURRENT_VPN="3x-ui"
     
@@ -940,18 +1097,12 @@ install_3x_ui_official() {
     print_info "Установка 3x-ui через официальный скрипт"
     print_info "Официальный скрипт установки: https://github.com/MHSanaei/3x-ui"
     
-    # Открываем необходимые порты перед запуском установщика
-    configure_firewall_3x_ui
-
     print_info "Загрузка и запуск официального скрипта установки..."
     
     # Загрузка и запуск официального скрипта
     if bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh); then
         print_success "3x-ui успешно установлен!"
         print_info "Веб-интерфейс обычно доступен по адресу: http://$CURRENT_IP:54321"
-        print_info "Логин: admin"
-        print_info "Пароль: admin"
-        print_warning "ВАЖНО: Измените пароль по умолчанию после первого входа!"
     else
         print_error "Ошибка при установке 3x-ui"
     fi
@@ -965,6 +1116,18 @@ setup_outline() {
     print_header
     print_info "Настройка Outline VPN"
     print_separator
+    
+    # Проверка на уже установленный Outline VPN
+    if ! check_outline_installed; then
+        echo
+        read -p "Продолжить установку несмотря на предупреждение? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Установка отменена"
+            return 1
+        fi
+        echo
+    fi
     
     CURRENT_VPN="outline"
     
@@ -997,37 +1160,6 @@ install_outline() {
     print_info "Outline VPN - это бесплатный инструмент с открытым исходным кодом от Google"
     print_info "для развертывания собственной VPN на вашем сервере"
     
-    # Настройка файервола
-    print_info "Настройка файервола..."
-    
-    case $PACKAGE_MANAGER in
-        "apt")
-            # Настройка UFW для Ubuntu/Debian
-            ufw allow 443/tcp
-            ufw allow 1024:65535/tcp
-            ufw allow 22/tcp
-            ufw --force enable
-            print_success "UFW настроен и включен"
-            ;;
-        "dnf"|"yum")
-            # Настройка firewalld для RHEL/CentOS
-            firewall-cmd --permanent --add-port=443/tcp
-            firewall-cmd --permanent --add-port=1024-65535/tcp
-            firewall-cmd --permanent --add-port=22/tcp
-            firewall-cmd --reload
-            firewall-cmd --set-default-zone=public
-            print_success "Firewalld настроен"
-            ;;
-        "pacman")
-            # Настройка UFW для Arch
-            ufw allow 443/tcp
-            ufw allow 1024:65535/tcp
-            ufw allow 22/tcp
-            ufw --force enable
-            print_success "UFW настроен и включен"
-            ;;
-    esac
-    
     # Установка Outline Server
     print_info "Установка Outline Server..."
     
@@ -1057,6 +1189,537 @@ install_outline() {
         print_info "- Проверьте подключение к интернету"
         print_info "- Попробуйте запустить скрипт позже (репозиторий может быть временно недоступен)"
         print_info "- Убедитесь, что порты 443 и 1024-65535 открыты"
+    fi
+    
+    print_separator
+    read -p "Нажмите Enter для возврата в главное меню..."
+}
+
+# Функция настройки Remnawave
+setup_remnawave() {
+    print_header
+    print_info "Настройка Remnawave"
+    print_separator
+    
+    # Проверка на уже установленный Remnawave
+    if ! check_remnawave_installed; then
+        echo
+        read -p "Продолжить установку несмотря на предупреждение? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Установка отменена"
+            return 1
+        fi
+        echo
+    fi
+    
+    CURRENT_VPN="remnawave"
+    
+    # Вывод информации о требованиях
+    print_info "Remnawave - это система Panel + Node для управления VPN"
+    print_info "Документация: https://docs.rw/"
+    echo
+    print_warning "Требования для установки:"
+    echo -e "  ${CYAN}•${NC} Docker и Docker Compose (будут установлены автоматически)"
+    echo -e "  ${CYAN}•${NC} PostgreSQL (будет установлен в контейнере)"
+    echo -e "  ${CYAN}•${NC} Reverse proxy с SSL (нужно настроить вручную после установки)"
+    echo -e "  ${CYAN}•${NC} Доменное имя (рекомендуется)"
+    echo
+    
+    # Выбор IP-адреса
+    print_info "Выбор IP-адреса для панели управления..."
+    get_available_ips
+    
+    # Запрос порта для панели
+    get_user_input "Введите порт для Remnawave Panel" "3000" "CURRENT_PORT"
+    
+    print_separator
+    print_info "Параметры установки:"
+    echo -e "  VPN: ${WHITE}$CURRENT_VPN${NC}"
+    echo -e "  IP-адрес Panel: ${WHITE}$CURRENT_IP${NC}"
+    echo -e "  Порт Panel: ${WHITE}$CURRENT_PORT${NC}"
+    echo -e "  База данных: ${WHITE}PostgreSQL (в Docker)${NC}"
+    print_separator
+    
+    read -p "Продолжить установку Remnawave Panel? (y/N): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        install_remnawave
+    else
+        print_info "Установка отменена"
+        return 1
+    fi
+}
+
+# Функция установки Remnawave
+install_remnawave() {
+    print_header
+    print_info "Установка Remnawave"
+    print_separator
+    
+    print_info "Remnawave - это современная панель управления VPN с архитектурой Panel + Node"
+    print_info "Официальная документация: https://docs.rw/"
+    echo
+    
+    print_info "Remnawave состоит из двух компонентов:"
+    print_info "1. Remnawave Panel - веб-панель управления (требует PostgreSQL)"
+    print_info "2. Remnawave Node - VPN сервер"
+    echo
+    
+    print_warning "ВНИМАНИЕ: Для полноценной работы Remnawave требуется:"
+    print_info "✓ Docker и Docker Compose"
+    print_info "✓ PostgreSQL база данных"
+    print_info "✓ Reverse proxy (Nginx/Caddy) с SSL"
+    print_info "✓ Доменное имя"
+    echo
+    
+    read -p "Установить Remnawave Panel с PostgreSQL? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Установка отменена"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    # Проверка Docker
+    if ! command -v docker &> /dev/null; then
+        print_error "Docker не установлен!"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    # Создание директорий
+    print_info "Создание директорий..."
+    mkdir -p /opt/remnawave/panel
+    mkdir -p /opt/remnawave/node
+    mkdir -p /etc/remnawave
+    
+    # Проверка переменных
+    if [[ -z "$CURRENT_PORT" ]]; then
+        CURRENT_PORT="3000"
+        print_warning "Порт не установлен, используется значение по умолчанию: $CURRENT_PORT"
+    fi
+    
+    if [[ -z "$CURRENT_IP" ]]; then
+        print_error "IP-адрес не установлен!"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    # Генерация паролей
+    print_info "Генерация паролей..."
+    DB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+    JWT_SECRET=$(openssl rand -base64 64 | tr -d "=+/" | cut -c1-64)
+    
+    # Проверка сгенерированных паролей
+    if [[ -z "$DB_PASSWORD" || -z "$JWT_SECRET" ]]; then
+        print_error "Ошибка при генерации паролей"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    cd /opt/remnawave/panel
+    
+    # Создание docker-compose для Panel + PostgreSQL
+    print_info "Создание конфигурации Docker Compose..."
+    
+    # Экранирование паролей для URL (URL encoding специальных символов)
+    if command -v python3 &> /dev/null; then
+        DB_PASSWORD_URL=$(python3 -c "import urllib.parse; import sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DB_PASSWORD" 2>/dev/null)
+    fi
+    
+    # Если Python не доступен, используем sed для базового экранирования
+    if [[ -z "$DB_PASSWORD_URL" ]]; then
+        DB_PASSWORD_URL=$(echo "$DB_PASSWORD" | sed 's/:/%3A/g' | sed 's/@/%40/g' | sed 's/#/%23/g' | sed 's/\$/%24/g' | sed 's/&/%26/g' | sed 's/+/%2B/g' | sed 's/=/%3D/g' | sed 's/\?/%3F/g' | sed 's/\//%2F/g' | sed 's/ /%20/g')
+    fi
+    
+    # Создание docker-compose.yml с использованием printf для безопасной вставки переменных
+    {
+        echo "version: '3.8'"
+        echo ""
+        echo "services:"
+        echo "  postgres:"
+        echo "    image: postgres:16-alpine"
+        echo "    container_name: remnawave-postgres"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      POSTGRES_DB: remnawave"
+        echo "      POSTGRES_USER: remnawave"
+        printf "      POSTGRES_PASSWORD: '%s'\n" "${DB_PASSWORD}"
+        echo "    volumes:"
+        echo "      - postgres_data:/var/lib/postgresql/data"
+        echo "    networks:"
+        echo "      - remnawave"
+        echo "    healthcheck:"
+        echo "      test:"
+        echo "        - CMD-SHELL"
+        echo "        - pg_isready -U remnawave"
+        echo "      interval: 10s"
+        echo "      timeout: 5s"
+        echo "      retries: 5"
+        echo ""
+        echo "  panel:"
+        echo "    image: ghcr.io/remnawave/backend:latest"
+        echo "    container_name: remnawave-panel"
+        echo "    restart: unless-stopped"
+        echo "    ports:"
+        printf "      - '%s:3000'\n" "${CURRENT_PORT}"
+        echo "    environment:"
+        printf "      DATABASE_URL: 'postgresql://remnawave:%s@postgres:5432/remnawave'\n" "${DB_PASSWORD_URL}"
+        printf "      JWT_SECRET: '%s'\n" "${JWT_SECRET}"
+        echo "      NODE_ENV: production"
+        echo "      PORT: '3000'"
+        echo "    depends_on:"
+        echo "      postgres:"
+        echo "        condition: service_healthy"
+        echo "    networks:"
+        echo "      - remnawave"
+        echo "    volumes:"
+        echo "      - panel_data:/app/data"
+        echo ""
+        echo "networks:"
+        echo "  remnawave:"
+        echo "    driver: bridge"
+        echo ""
+        echo "volumes:"
+        echo "  postgres_data:"
+        echo "  panel_data:"
+    } > docker-compose.yml
+    
+    # Проверка созданного файла
+    if [[ ! -f docker-compose.yml ]]; then
+        print_error "Ошибка: файл docker-compose.yml не создан"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    # Проверка синтаксиса YAML (если доступен yamllint или docker compose config)
+    print_info "Проверка синтаксиса конфигурации..."
+    if docker compose config > /dev/null 2>&1; then
+        print_success "Синтаксис конфигурации корректен"
+    else
+        print_warning "Предупреждение: возможна ошибка в синтаксисе конфигурации"
+        print_info "Проверяю файл docker-compose.yml..."
+        if docker compose config 2>&1 | head -20; then
+            :
+        else
+            print_error "Ошибка в конфигурации docker-compose.yml"
+            print_info "Содержимое файла:"
+            cat docker-compose.yml
+            read -p "Нажмите Enter для возврата в главное меню..."
+            return 1
+        fi
+    fi
+    
+    # Запуск контейнеров
+    print_info "Запуск Remnawave Panel и PostgreSQL..."
+    if docker compose up -d; then
+        # Ожидание запуска
+        print_info "Ожидание запуска сервисов (30 секунд)..."
+        sleep 30
+        
+        if docker ps | grep -q "remnawave-panel"; then
+            print_success "Remnawave Panel успешно запущен!"
+        else
+            print_error "Ошибка при запуске Panel"
+            print_info "Проверьте логи: docker compose logs"
+            read -p "Нажмите Enter для возврата в главное меню..."
+            return 1
+        fi
+    else
+        print_error "Ошибка при запуске Docker Compose"
+        read -p "Нажмите Enter для возврата в главное меню..."
+        return 1
+    fi
+    
+    print_separator
+    print_success "Установка Remnawave Panel завершена!"
+    echo
+    print_info "📋 Информация для доступа:"
+    echo -e "  Панель управления: ${WHITE}http://${CURRENT_IP}:${CURRENT_PORT}${NC}"
+    echo -e "  База данных: ${WHITE}PostgreSQL${NC}"
+    echo -e "  DB Password: ${WHITE}${DB_PASSWORD}${NC}"
+    echo -e "  JWT Secret: ${WHITE}${JWT_SECRET}${NC}"
+    echo
+    print_warning "⚠ ВАЖНО: Сохраните эти данные в безопасном месте!"
+    echo
+    print_info "📚 Следующие шаги:"
+    print_info "1. Настройте reverse proxy (Nginx/Caddy) для доступа к панели через домен"
+    print_info "2. Получите SSL сертификат (Let's Encrypt/Certbot)"
+    print_info "3. Откройте панель в браузере и завершите первоначальную настройку"
+    print_info "4. Установите Remnawave Node (на этом или другом сервере)"
+    echo
+    print_info "📖 Официальная документация:"
+    print_info "   Quick Start: https://docs.rw/docs/overview/quick-start/"
+    print_info "   Panel Setup: https://docs.rw/docs/install/remnawave-panel/"
+    print_info "   Node Setup: https://docs.rw/docs/install/remnawave-node/"
+    print_info "   Reverse Proxy: https://docs.rw/docs/install/reverse-proxy/"
+    echo
+    print_info "🔧 Управление:"
+    print_info "   Директория: cd /opt/remnawave/panel"
+    print_info "   Логи Panel: docker compose logs -f panel"
+    print_info "   Логи DB: docker compose logs -f postgres"
+    print_info "   Перезапуск: docker compose restart"
+    print_info "   Остановка: docker compose down"
+    print_info "   Запуск: docker compose up -d"
+    
+    print_separator
+    read -p "Нажмите Enter для возврата в главное меню..."
+}
+
+# Функция настройки Hysteria2
+setup_hysteria2() {
+    print_header
+    print_info "Настройка Hysteria2"
+    print_separator
+    
+    # Проверка на уже установленный Hysteria2
+    if ! check_hysteria2_installed; then
+        echo
+        read -p "Продолжить установку несмотря на предупреждение? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Установка отменена"
+            return 1
+        fi
+        echo
+    fi
+    
+    CURRENT_VPN="hysteria2"
+    
+    # Выбор IP-адреса
+    get_available_ips
+    
+    # Запрос порта
+    get_user_input "Введите порт для Hysteria2" "443" "CURRENT_PORT"
+    
+    # Запрос пароля
+    while true; do
+        read -rsp "Введите пароль для Hysteria2: " CURRENT_PASSWORD
+        echo
+        read -rsp "Повторите пароль: " CURRENT_PASSWORD2
+        echo
+        
+        if [ "$CURRENT_PASSWORD" != "$CURRENT_PASSWORD2" ]; then
+            print_error "Пароли не совпадают! Попробуйте еще раз."
+            echo
+        else
+            break
+        fi
+    done
+    
+    print_separator
+    print_info "Параметры установки:"
+    echo -e "  VPN: ${WHITE}$CURRENT_VPN${NC}"
+    echo -e "  IP-адрес: ${WHITE}$CURRENT_IP${NC} (интерфейс: $CURRENT_INTERFACE)"
+    echo -e "  Порт: ${WHITE}$CURRENT_PORT${NC}"
+    print_separator
+    
+    read -p "Продолжить установку? (y/N): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        install_hysteria2
+    else
+        print_info "Установка отменена"
+        return 1
+    fi
+}
+
+# Функция установки Hysteria2
+install_hysteria2() {
+    print_header
+    print_info "Установка Hysteria2"
+    print_separator
+    
+    print_info "Hysteria2 - это мощный прокси-протокол нового поколения"
+    print_info "с высокой производительностью и обфускацией"
+    print_info "Официальный сайт: https://v2.hysteria.network/"
+    echo
+    
+    # Установка Hysteria2 через официальный скрипт
+    print_info "Запуск официального скрипта установки..."
+    print_info "Команда: bash <(curl -fsSL https://get.hy2.sh/)"
+    echo
+    
+    if bash <(curl -fsSL https://get.hy2.sh/); then
+        print_success "Hysteria2 успешно установлен!"
+        echo
+        
+        # Создание директории для конфигурации
+        print_info "Создание конфигурации сервера..."
+        mkdir -p /etc/hysteria
+        
+        # Генерация самоподписанного сертификата
+        print_info "Генерация самоподписанного SSL сертификата..."
+        openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
+            -nodes -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
+            -subj "/CN=${CURRENT_IP}" \
+            -addext "subjectAltName=IP:${CURRENT_IP}"
+        
+        print_success "Сертификат создан"
+        echo
+        
+        # Создание конфигурационного файла сервера
+        print_info "Создание файла конфигурации сервера..."
+        cat > /etc/hysteria/config.yaml <<EOF
+# Hysteria2 Server Configuration
+# Документация: https://v2.hysteria.network/docs/getting-started/Server/
+
+listen: :${CURRENT_PORT}
+
+# TLS сертификаты
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+# Аутентификация
+auth:
+  type: password
+  password: ${CURRENT_PASSWORD}
+
+# Маскировка под обычный веб-сервер
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com
+    rewriteHost: true
+
+# Параметры QUIC
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+# Ограничения скорости (можно изменить)
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+
+# Игнорирование ошибок клиентов
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 60s
+
+# Логирование (опционально)
+# acme:
+#   domains:
+#     - your-domain.com
+#   email: your-email@example.com
+EOF
+        
+        print_success "Конфигурация создана: /etc/hysteria/config.yaml"
+        echo
+        
+        # Создание systemd сервиса
+        print_info "Создание systemd сервиса..."
+        cat > /etc/systemd/system/hysteria-server.service <<EOF
+[Unit]
+Description=Hysteria2 Server Service
+Documentation=https://v2.hysteria.network/
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/hysteria
+ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        # Запуск и активация сервиса
+        print_info "Запуск Hysteria2 сервера..."
+        systemctl daemon-reload
+        systemctl enable hysteria-server
+        systemctl start hysteria-server
+        
+        sleep 3
+        
+        if systemctl is-active --quiet hysteria-server; then
+            print_success "Hysteria2 сервер успешно запущен!"
+        else
+            print_error "Ошибка при запуске сервера"
+            print_info "Проверьте логи: journalctl -u hysteria-server -f"
+            print_separator
+            read -p "Нажмите Enter для возврата в главное меню..."
+            return 1
+        fi
+        
+        print_separator
+        print_success "✓ Установка Hysteria2 завершена!"
+        echo
+        print_info "📋 Информация для подключения:"
+        echo -e "  Сервер: ${WHITE}${CURRENT_IP}:${CURRENT_PORT}${NC}"
+        echo -e "  Пароль: ${WHITE}${CURRENT_PASSWORD}${NC}"
+        echo
+        print_warning "⚠ ВАЖНО: Сохраните эти данные!"
+        echo
+        print_info "📱 Конфигурация клиента (client.yaml):"
+        print_separator
+        cat <<CLIENTCONFIG
+server: ${CURRENT_IP}:${CURRENT_PORT}
+
+auth: ${CURRENT_PASSWORD}
+
+tls:
+  insecure: true
+  sni: ${CURRENT_IP}
+
+bandwidth:
+  up: 100 mbps
+  down: 100 mbps
+
+socks5:
+  listen: 127.0.0.1:1080
+
+http:
+  listen: 127.0.0.1:8080
+
+fastOpen: true
+lazy: false
+CLIENTCONFIG
+        print_separator
+        echo
+        print_info "💾 Сохраните конфигурацию выше в файл client.yaml"
+        print_info "   Запуск клиента: hysteria client -c client.yaml"
+        echo
+        print_info "📂 Файлы сервера:"
+        print_info "   Конфигурация: /etc/hysteria/config.yaml"
+        print_info "   Сертификаты: /etc/hysteria/server.{crt,key}"
+        print_info "   Бинарник: /usr/local/bin/hysteria"
+        echo
+        print_info "🔧 Управление сервером:"
+        print_info "   Статус: systemctl status hysteria-server"
+        print_info "   Запуск: systemctl start hysteria-server"
+        print_info "   Остановка: systemctl stop hysteria-server"
+        print_info "   Перезапуск: systemctl restart hysteria-server"
+        print_info "   Логи: journalctl -u hysteria-server -f"
+        echo
+        print_info "📥 Скачать клиенты Hysteria2:"
+        print_info "   Официальный сайт: https://v2.hysteria.network/docs/getting-started/Installation/"
+        print_info "   Windows/Mac/Linux: https://v2.hysteria.network/docs/getting-started/Client/"
+        print_info "   Android: v2rayNG, NekoBox"
+        print_info "   iOS: Shadowrocket, Stash"
+        echo
+        print_info "📖 Документация:"
+        print_info "   https://v2.hysteria.network/docs/getting-started/Server/"
+        
+    else
+        print_error "Ошибка при установке Hysteria2"
+        print_info "Попробуйте установить вручную:"
+        print_info "   bash <(curl -fsSL https://get.hy2.sh/)"
+        print_info ""
+        print_info "Репозиторий: https://github.com/apernet/hysteria"
     fi
     
     print_separator
@@ -1108,8 +1771,32 @@ show_status() {
         print_success "Outline VPN: установлен (директории найдены)"
     fi
     
+    # Проверка Remnawave
+    if docker ps --format "{{.Names}}" | grep -q "remnawave-panel"; then
+        print_success "Remnawave: установлен и запущен (Docker контейнеры)"
+        if docker ps --format "{{.Names}}" | grep -q "remnawave-postgres"; then
+            print_info "  └─ PostgreSQL: активен"
+        fi
+    elif [[ -d "/opt/remnawave/panel" && -f "/opt/remnawave/panel/docker-compose.yml" ]]; then
+        print_success "Remnawave: установлен (конфигурация найдена, контейнеры остановлены)"
+    fi
+    
+    # Проверка Hysteria2
+    if systemctl is-active --quiet hysteria-server 2>/dev/null || systemctl is-active --quiet hysteria 2>/dev/null; then
+        print_success "Hysteria2: установлен и запущен (systemd сервис)"
+    elif [[ -f "/usr/local/bin/hysteria" || -f "/usr/bin/hysteria" ]]; then
+        print_success "Hysteria2: установлен (исполняемый файл найден)"
+    fi
+    
     # Если нет установленных VPN
-    if [[ ! -d "$DEFAULT_DATA_PATH" && ! -f "/usr/local/bin/x-ui" && ! -f "/usr/bin/x-ui" && ! -d "/opt/outline" && ! -d "/var/lib/outline" ]]; then
+    local vpn_found=false
+    [[ -d "$DEFAULT_DATA_PATH" ]] && vpn_found=true
+    [[ -f "/usr/local/bin/x-ui" || -f "/usr/bin/x-ui" ]] && vpn_found=true
+    [[ -d "/opt/outline" || -d "/var/lib/outline" ]] && vpn_found=true
+    [[ -d "/opt/remnawave/panel" ]] && vpn_found=true
+    [[ -f "/usr/local/bin/hysteria" ]] && vpn_found=true
+    
+    if [[ "$vpn_found" == "false" ]]; then
         print_warning "VPN не установлены"
     fi
     
@@ -1123,20 +1810,30 @@ main_menu() {
         print_header
         echo -e "${WHITE}Главное меню:${NC}"
         echo
+        echo -e "${YELLOW}Установка VPN:${NC}"
         echo -e "  ${CYAN}1)${NC} Установить wg-easy"
         echo -e "  ${CYAN}2)${NC} Установить 3x-ui"
         echo -e "  ${CYAN}3)${NC} Установить Outline VPN"
-        echo -e "  ${CYAN}4)${NC} Показать статус"
-        echo -e "  ${CYAN}5)${NC} Остановить VPN"
-        echo -e "  ${CYAN}6)${NC} Очистка wg-easy"
-        echo -e "  ${CYAN}7)${NC} Очистка 3x-ui"
-        echo -e "  ${CYAN}8)${NC} Очистка Outline VPN"
-        echo -e "  ${CYAN}9)${NC} Полная очистка (удалить всё)"
-        echo -e "  ${CYAN}10)${NC} Выход"
+        echo -e "  ${CYAN}4)${NC} Установить Remnawave"
+        echo -e "  ${CYAN}5)${NC} Установить Hysteria2"
+        echo
+        echo -e "${YELLOW}Управление:${NC}"
+        echo -e "  ${CYAN}6)${NC} Показать статус"
+        echo -e "  ${CYAN}7)${NC} Остановить VPN"
+        echo
+        echo -e "${YELLOW}Очистка:${NC}"
+        echo -e "  ${CYAN}8)${NC} Очистка wg-easy"
+        echo -e "  ${CYAN}9)${NC} Очистка 3x-ui"
+        echo -e "  ${CYAN}10)${NC} Очистка Outline VPN"
+        echo -e "  ${CYAN}11)${NC} Очистка Remnawave"
+        echo -e "  ${CYAN}12)${NC} Очистка Hysteria2"
+        echo -e "  ${CYAN}13)${NC} Полная очистка (удалить всё)"
+        echo
+        echo -e "  ${CYAN}0)${NC} Выход"
         echo
         print_separator
         
-        read -p "Выберите действие (1-10): " -r
+        read -p "Выберите действие (0-13): " -r
         
         case $REPLY in
             1)
@@ -1149,15 +1846,21 @@ main_menu() {
                 setup_outline
                 ;;
             4)
-                show_status
+                setup_remnawave
                 ;;
             5)
+                setup_hysteria2
+                ;;
+            6)
+                show_status
+                ;;
+            7)
                 print_info "Остановка VPN..."
                 stop_vpn "wg-easy"
                 stop_vpn "3x-ui"
                 read -p "Нажмите Enter для возврата в главное меню..."
                 ;;
-            6)
+            8)
                 print_warning "ВНИМАНИЕ: Это действие удалит wg-easy и все его данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -1166,7 +1869,7 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            7)
+            9)
                 print_warning "ВНИМАНИЕ: Это действие удалит 3x-ui и все его данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -1175,7 +1878,7 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            8)
+            10)
                 print_warning "ВНИМАНИЕ: Это действие удалит Outline VPN и все его данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -1184,7 +1887,25 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            9)
+            11)
+                print_warning "ВНИМАНИЕ: Это действие удалит Remnawave и все его данные!"
+                read -p "Вы уверены? (y/N): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    cleanup_remnawave
+                    read -p "Нажмите Enter для возврата в главное меню..."
+                fi
+                ;;
+            12)
+                print_warning "ВНИМАНИЕ: Это действие удалит Hysteria2 и все его данные!"
+                read -p "Вы уверены? (y/N): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    cleanup_hysteria2
+                    read -p "Нажмите Enter для возврата в главное меню..."
+                fi
+                ;;
+            13)
                 print_warning "ВНИМАНИЕ: Это действие удалит ВСЕ контейнеры, образы и данные!"
                 read -p "Вы уверены? (y/N): " -n 1 -r
                 echo
@@ -1193,7 +1914,7 @@ main_menu() {
                     read -p "Нажмите Enter для возврата в главное меню..."
                 fi
                 ;;
-            10)
+            0)
                 print_info "До свидания!"
                 exit 0
                 ;;
