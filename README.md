@@ -26,7 +26,7 @@
 
 1. Скачайте скрипт:
 ```bash
-wget https://raw.githubusercontent.com/your-repo/vpn-installer/main/vpn-installer.sh
+wget https://raw.githubusercontent.com/bomjik76/vpn/refs/heads/main/vpn-installer.sh
 ```
 
 2. Сделайте скрипт исполняемым:
